@@ -1,0 +1,25 @@
+
+# Library build outputs and local SDK selection/cache
+/target/
+**/target/
+**/.dart_tool/
+**/build/
+**/.flutter-plugins*
+.fvm/
+# Private captures, device identifiers, health data and Android diagnostics
+/bugreport*.zip
+*.snoop
+*.btsnoop
+*.pcap
+*.pcapng
+*.jsonl
+/messwerte-*.md
+/analyse/
+/.agents/
+/.codex/
+/.aws/
+.env
+.env.*
+__pycache__/
+*.py[cod]
+
