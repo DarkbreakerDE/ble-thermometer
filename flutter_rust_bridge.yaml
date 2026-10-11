@@ -1,0 +1,5 @@
+rust_input: crate::api
+rust_root: packages/thermometer_core/rust
+dart_output: packages/thermometer_core/lib/src/rust
+web: false
+auto_upgrade_dependency: false

@@ -50,6 +50,12 @@ synthetic packets and the real native bridge. The Flutter BLE adapter has not ye
 been compiled because its dependency is unavailable in this environment's offline
 cache. Android/iOS build and device validation remain outstanding.
 
-Analysis tools, protocol investigation records, test fixtures, private bugreports,
-pairing captures and real measurement histories are not included in this package
-commit. Private captures and build caches are excluded by `.gitignore`.
+Unit and integration tests use synthetic packets and are included in this repository.
+Run `cargo test --workspace` from the repository root and `fvm dart test` from
+`packages/thermometer_core`. The generated bridge can be regenerated with
+`flutter_rust_bridge_codegen generate --config-file flutter_rust_bridge.yaml`
+using codegen version 2.13.0 and an installed `cargo-expand`.
+
+Analysis tools, protocol investigation records, private bugreports, pairing captures
+and real measurement histories remain excluded from `main`. Private captures and
+build caches are excluded by `.gitignore`.
