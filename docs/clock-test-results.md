@@ -3,7 +3,7 @@
 Sanitized summary of a user-operated test on the `tests` branch. Device address,
 raw captures, exact personal timestamps and measurement histories are excluded.
 
-## Observed result
+## Initial clock synchronization result
 
 - BlueZ connected to an already paired OT35 and resolved its GATT services.
 - Current Time (`1805/2A2B`) offered read, write and notify.
@@ -22,9 +22,9 @@ raw captures, exact personal timestamps and measurement histories are excluded.
 
 ## What remains unverified
 
-The calendar date was already correct before the write and remained the same
-in both readbacks. The payload writes year, month and day as well as time, but
-changing an incorrect date has not yet been demonstrated on hardware.
+The initial clock test kept an already correct date. The later calendar-change
+test below demonstrated changing the day and weekday, then restoring them.
+Separate changes to the month and year have not yet been tested on hardware.
 
 No visual confirmation of the two LED flashes was supplied for this test.
 Persistence after power-off, timestamps of subsequent measurements, long-term
@@ -35,19 +35,33 @@ accuracy and Android/iOS clock synchronization remain unverified.
 The successful hardware run used the Rust-backed tester. The tester now encodes
 Current Time in Python so that Rust and Flutter are unnecessary. Synthetic codec
 checks cover leap-day encoding, weekday, fraction, adjustment reason, local wall
-time and invalid input. The Python replacement has not yet been run on hardware.
+time and invalid input. The Python replacement was subsequently used successfully
+for the calendar-change and restoration test below.
 
 Run those checks with `python3 -m unittest discover -s tests`.
 To check persistence, disconnect, power-cycle, reconnect and use `read 2a2b`
-before another clock write. To verify a calendar change, separately arrange a
-known incorrect device date and compare before/after readbacks; `clock-test`
-always writes the laptop's current local date and time.
+before another clock write. `clock-test` always writes the laptop's current local
+date and time; `date-test` tests a deliberately different date and restores it.
 
-## Next prepared test: calendar change
+## Verified calendar change and restoration (Python-only tester)
 
-`date-test [YYYY-MM-DD]` is available in the Python tester. It requires a
-date different from the device readback and verifies the write with two reads.
-Its `finally` block attempts to restore and verify current laptop time even
-if the test write or its verification fails. No calendar-change hardware
-result is recorded yet. The tests branch contains Python investigation tools
-and documentation; Flutter/Rust library sources live on main.
+- `date-test` read the initial device date, then selected the following day.
+- Current Time and FFF3=01 writes were accepted for the test date.
+- The first readback matched the complete payload; a second read approximately
+  two seconds later retained the changed day and showed advancing seconds.
+- The weekday changed from Sunday (07) to Monday (01) and was valid in both reads.
+- Test-date deviations were approximately -0.27 and -1.26 seconds, within the
+  two-second tolerance. `date_write_verified` was reported.
+- The tester then wrote current laptop date/time and sent FFF3=01 again.
+  Both writes were accepted. Two readbacks confirmed the original calendar date
+  and Sunday weekday were restored, with the clock continuing to advance.
+- Restoration deviations were approximately -0.27 and +0.40 seconds, within
+  tolerance. `clock_restore_verified` and `date_test_passed` were reported.
+- Fraction and adjustment reason matched each write in the immediate readback
+  and were 00 in the later reads, consistent with the first clock test.
+
+This run verifies a day/weekday change and restoration through the standalone
+Python tester. It does not establish restart persistence, month/year changes,
+measurement timestamp behavior or visual LED confirmation. The tests branch
+contains Python investigation tools and documentation; Flutter/Rust library
+sources live on main.
