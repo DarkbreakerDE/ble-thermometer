@@ -59,3 +59,8 @@ using codegen version 2.13.0 and an installed `cargo-expand`.
 Analysis tools, protocol investigation records, private bugreports, pairing captures
 and real measurement histories remain excluded from `main`. Private captures and
 build caches are excluded by `.gitignore`.
+
+## License
+
+Licensed under the [MIT License](LICENSE). Third-party dependencies retain their
+own licenses.
