@@ -8,7 +8,6 @@ import argparse
 import json
 import shlex
 import sys
-import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
@@ -21,7 +20,7 @@ try:
 except ImportError:
     sys.exit("Benötigt python3-dbus und python3-gi im Python des Laptops.")
 
-from decode_ovy import decode_measurement
+from decode_ovy import decode_measurement, encode_clock, decode_clock
 
 DEV = "org.bluez.Device1"
 CHAR = "org.bluez.GattCharacteristic1"
@@ -128,56 +127,34 @@ def main():
                              dbus.Dictionary({"type": "request"}, signature="sv"))
                 log("write_ok", uuid="fff4", raw=rest[0])
             elif command == "clock-test" and not rest:
-                # Compile first: timestamp capture must follow potentially slow builds.
-                root = Path(__file__).resolve().parents[1]
-                subprocess.run(["cargo", "build", "--offline", "-p", "thermometer_protocol",
-                                "--example", "clock_commands"], cwd=root, check=True)
-                metadata = json.loads(subprocess.check_output(
-                    ["cargo", "metadata", "--offline", "--format-version", "1", "--no-deps"],
-                    cwd=root, text=True))
-                binary = Path(metadata["target_directory"]) / "debug/examples/clock_commands"
-                now = datetime.now().astimezone()
-                clock = {"local_time": {k: getattr(now, k) for k in
-                         ("year", "month", "day", "hour", "minute", "second")},
-                         "microsecond": now.microsecond}
-                commands = json.loads(subprocess.check_output(
-                    [str(binary)], input=json.dumps(clock), text=True))
-                expected = [("2a2b", 10), ("fff3", 1)]
-                if len(commands) != len(expected):
-                    raise ValueError("Unerwartete Rust-Kommandos")
-                for item, (short, length) in zip(commands, expected):
-                    if (item["type"] != "write" or
-                        item["characteristic"]["characteristic_id"] !=
-                            f"0000{short}-0000-1000-8000-00805f9b34fb" or
-                        len(item["data"]) != length):
-                        raise ValueError("Unerwartetes Rust-Kommando")
                 c, flags = characteristic("2a2b")
                 if "read" not in flags or "write" not in flags:
                     raise ValueError("Current Time bietet kein Read/Write an")
                 log("clock_before", raw=bytes(c.ReadValue(
                     dbus.Dictionary({}, signature="sv"))).hex())
+                now = datetime.now().astimezone()
+                commands = [("2a2b", encode_clock(now)), ("fff3", bytes([1]))]
                 sent_at = time.monotonic()
-                for item, (short, _) in zip(commands, expected):
+                for short, payload in commands:
                     characteristic(short)[0].WriteValue(
-                        dbus.Array(item["data"], signature="y"),
+                        dbus.Array(payload, signature="y"),
                         dbus.Dictionary({"type": "request"}, signature="sv"))
-                    log("write_ok", uuid=short, raw=bytes(item["data"]).hex())
+                    log("write_ok", uuid=short, raw=payload.hex())
                 # Two independent reads distinguish a running clock from an echo.
                 for sample in range(2):
                     if sample:
                         time.sleep(2)
                     raw = bytes(c.ReadValue(dbus.Dictionary({}, signature="sv")))
-                    if len(raw) != 10:
-                        raise ValueError("Current Time muss zehn Bytes enthalten")
-                    stamp = datetime(int.from_bytes(raw[:2], "little"), *raw[2:7])
-                    stamp += timedelta(seconds=raw[8] / 256)
+                    stamp, weekday, fraction, reason = decode_clock(raw)
+                    stamp += timedelta(seconds=fraction / 256)
                     target = now.replace(tzinfo=None) + timedelta(
                         seconds=time.monotonic() - sent_at)
                     drift = (stamp - target).total_seconds()
-                    weekday_ok = raw[7] == stamp.isoweekday()
+                    weekday_ok = weekday == stamp.isoweekday()
                     log("clock_readback", sample=sample, raw=raw.hex(),
                         device_time=stamp.isoformat(), drift_seconds=round(drift, 3),
-                        weekday_ok=weekday_ok, within_tolerance=abs(drift) <= 2)
+                        weekday_ok=weekday_ok, adjust_reason=reason,
+                        within_tolerance=abs(drift) <= 2)
                     if abs(drift) > 2 or not weekday_ok:
                         raise ValueError("Uhr-Readback weicht ab; siehe privates Log")
                 log("clock_test_passed", persistence_verified=False,
@@ -207,7 +184,7 @@ def main():
                 loop.quit()
             else:
                 raise ValueError("Befehle: status, clock-test, read 2a19, read fff4, settings HEX, fetch, ack, control 00/01/02, connect, mark TEXT, quit")
-        except (dbus.DBusException, ValueError, OSError, subprocess.SubprocessError) as e:
+        except (dbus.DBusException, ValueError, OSError) as e:
             log("error", message=str(e))
         return False
 

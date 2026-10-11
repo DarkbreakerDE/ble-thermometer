@@ -7,6 +7,25 @@ from decimal import Decimal
 from pathlib import Path
 
 
+
+def encode_clock(stamp):
+    """Observed OT35 Current Time payload, using local civil time (no UTC offset)."""
+    if not 1582 <= stamp.year <= 9999:
+        raise ValueError("Current Time year must be between 1582 and 9999")
+    fraction = stamp.microsecond * 256 // 1_000_000
+    return stamp.year.to_bytes(2, "little") + bytes((
+        stamp.month, stamp.day, stamp.hour, stamp.minute, stamp.second,
+        stamp.isoweekday(), fraction, 1))
+
+
+def decode_clock(raw):
+    """Decode date/time, weekday, fraction and adjustment reason from CTS."""
+    if len(raw) != 10:
+        raise ValueError("Current Time must contain exactly ten bytes")
+    stamp = datetime(int.from_bytes(raw[:2], "little"), *raw[2:7])
+    return stamp, raw[7], raw[8], raw[9]
+
+
 def decode_measurement(raw):
     b = bytes.fromhex(raw)
     if len(b) != 13 or b[0] not in (6, 7):

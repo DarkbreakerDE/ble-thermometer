@@ -138,10 +138,11 @@ voraus. Andere Geräte-/Firmwarevarianten können davon abweichen.
 
 ## Clock hardware test (tests branch)
 
-The existing Linux tester supports `clock-test`. It builds the Rust
-`clock_commands` example, obtains the actual driver's Current Time and blink ACK
-commands, and executes them in order with GATT write responses. No clock layout
-is duplicated in Python. Rust and cached Cargo dependencies are required.
+The existing Linux tester supports `clock-test` using Python alone, with BlueZ,
+`python3-dbus` and `python3-gi`. Rust, Cargo, Flutter and the library project are
+not required. Copy `analyse/live_ovy.py` and `analyse/decode_ovy.py` together to
+use the tester separately. The Python codec implements the observed ten-byte
+Current Time format, followed by the known FFF3=01 blink command.
 
 After `ready` is printed, enter `clock-test` (do not enter `ready` itself).
 This explicitly sets the device clock to the laptop's local time. The tester reads
@@ -153,3 +154,5 @@ reconnect and use `read 2a2b` before issuing another `clock-test`. Actual
 measurement timestamps after restart still require separate verification.
 
 Real clock readbacks and logs remain ignored; do not add them to Git.
+
+Sanitized hardware results: [clock test results](docs/clock-test-results.md).
