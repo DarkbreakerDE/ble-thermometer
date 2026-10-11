@@ -1,0 +1,19 @@
+[package]
+name = "thermometer_bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.13.0"
+thermometer_protocol = { path = "../../../crates/thermometer_protocol" }
+serde_json.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

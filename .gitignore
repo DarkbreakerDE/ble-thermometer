@@ -1,27 +1,39 @@
-# Private source captures and Android bugreport
-/bugreport1.zip
-/ovy-pairing.snoop
-/messwerte-*.md
+# Generated bridge sources and dependency lockfiles are intentionally committed.
+# Ignore compiled outputs, generated platform configuration and local caches.
+**/target/
+**/.dart_tool/
+**/build/
+**/.flutter-plugins*
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/coverage/
+**/native_assets.yaml
+**/.gradle/
+**/android/local.properties
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/.fvm/
+
+# Private captures, device identifiers, health data and Android diagnostics
+/bugreport*.zip
 *.snoop
 *.btsnoop
 *.pcap
 *.pcapng
 *.jsonl
-
-# Local analysis contains pairing keys, device identifiers and real measurements.
-# Only the two source programs are intended for publication.
+/messwerte-*.md
 /analyse/*
 !/analyse/decode_ovy.py
 !/analyse/live_ovy.py
-
-# Python build/environment files
-__pycache__/
-*.py[cod]
-.venv/
-.env
-.env.*
-
-# Local tool configuration and credentials
+!/analyse/test_clock.py
 /.agents/
 /.codex/
 /.aws/
+.env
+.env.*
+__pycache__/
+*.py[cod]
+
