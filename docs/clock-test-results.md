@@ -42,3 +42,12 @@ To check persistence, disconnect, power-cycle, reconnect and use `read 2a2b`
 before another clock write. To verify a calendar change, separately arrange a
 known incorrect device date and compare before/after readbacks; `clock-test`
 always writes the laptop's current local date and time.
+
+## Next prepared test: calendar change
+
+`date-test [YYYY-MM-DD]` is available in the Python tester. It requires a
+date different from the device readback and verifies the write with two reads.
+Its `finally` block attempts to restore and verify current laptop time even
+if the test write or its verification fails. No calendar-change hardware
+result is recorded yet. The tests branch contains Python investigation tools
+and documentation; Flutter/Rust library sources live on main.

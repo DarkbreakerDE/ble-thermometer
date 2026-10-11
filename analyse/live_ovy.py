@@ -2,7 +2,7 @@
 """Interactive BlueZ tester. Run on the laptop host, not in a sandbox.
 
 Requires python3-dbus and python3-gi. Pair using bluetoothctl first.
-No automatic writes or reconnects. Explicit clock-test writes local time and blink ACK.
+No automatic writes or reconnects. Explicit clock/date tests write Current Time and blink ACK.
 """
 import argparse
 import json
@@ -20,7 +20,7 @@ try:
 except ImportError:
     sys.exit("Benötigt python3-dbus und python3-gi im Python des Laptops.")
 
-from decode_ovy import decode_measurement, encode_clock, decode_clock
+from decode_ovy import decode_measurement, encode_clock, decode_clock, choose_date_test_time
 
 DEV = "org.bluez.Device1"
 CHAR = "org.bluez.GattCharacteristic1"
@@ -100,6 +100,33 @@ def main():
     bus.add_signal_receiver(changed, signal_name="PropertiesChanged", dbus_interface=PROP,
                             bus_name="org.bluez", path_keyword="object_path")
 
+    def write_and_check_clock(stamp, phase):
+        c, flags = characteristic("2a2b")
+        if "read" not in flags or "write" not in flags:
+            raise ValueError("Current Time bietet kein Read/Write an")
+        sent_at = time.monotonic()
+        for short, payload in (("2a2b", encode_clock(stamp)), ("fff3", bytes([1]))):
+            characteristic(short)[0].WriteValue(
+                dbus.Array(payload, signature="y"),
+                dbus.Dictionary({"type": "request"}, signature="sv"))
+            log("write_ok", phase=phase, uuid=short, raw=payload.hex())
+        for sample in range(2):
+            if sample:
+                time.sleep(2)
+            raw = bytes(c.ReadValue(dbus.Dictionary({}, signature="sv")))
+            read_stamp, weekday, fraction, reason = decode_clock(raw)
+            read_stamp += timedelta(seconds=fraction / 256)
+            target = stamp.replace(tzinfo=None) + timedelta(
+                seconds=time.monotonic() - sent_at)
+            drift = (read_stamp - target).total_seconds()
+            weekday_ok = weekday == read_stamp.isoweekday()
+            log("clock_readback", phase=phase, sample=sample, raw=raw.hex(),
+                device_time=read_stamp.isoformat(), drift_seconds=round(drift, 3),
+                weekday_ok=weekday_ok, adjust_reason=reason,
+                within_tolerance=abs(drift) <= 2)
+            if abs(drift) > 2 or not weekday_ok:
+                raise ValueError("Uhr-Readback weicht ab; siehe privates Log")
+
     def run_command(line):
         try:
             parts = shlex.split(line)
@@ -127,38 +154,36 @@ def main():
                              dbus.Dictionary({"type": "request"}, signature="sv"))
                 log("write_ok", uuid="fff4", raw=rest[0])
             elif command == "clock-test" and not rest:
-                c, flags = characteristic("2a2b")
-                if "read" not in flags or "write" not in flags:
-                    raise ValueError("Current Time bietet kein Read/Write an")
-                log("clock_before", raw=bytes(c.ReadValue(
+                log("clock_before", raw=bytes(characteristic("2a2b")[0].ReadValue(
                     dbus.Dictionary({}, signature="sv"))).hex())
-                now = datetime.now().astimezone()
-                commands = [("2a2b", encode_clock(now)), ("fff3", bytes([1]))]
-                sent_at = time.monotonic()
-                for short, payload in commands:
-                    characteristic(short)[0].WriteValue(
-                        dbus.Array(payload, signature="y"),
-                        dbus.Dictionary({"type": "request"}, signature="sv"))
-                    log("write_ok", uuid=short, raw=payload.hex())
-                # Two independent reads distinguish a running clock from an echo.
-                for sample in range(2):
-                    if sample:
-                        time.sleep(2)
-                    raw = bytes(c.ReadValue(dbus.Dictionary({}, signature="sv")))
-                    stamp, weekday, fraction, reason = decode_clock(raw)
-                    stamp += timedelta(seconds=fraction / 256)
-                    target = now.replace(tzinfo=None) + timedelta(
-                        seconds=time.monotonic() - sent_at)
-                    drift = (stamp - target).total_seconds()
-                    weekday_ok = weekday == stamp.isoweekday()
-                    log("clock_readback", sample=sample, raw=raw.hex(),
-                        device_time=stamp.isoformat(), drift_seconds=round(drift, 3),
-                        weekday_ok=weekday_ok, adjust_reason=reason,
-                        within_tolerance=abs(drift) <= 2)
-                    if abs(drift) > 2 or not weekday_ok:
-                        raise ValueError("Uhr-Readback weicht ab; siehe privates Log")
+                write_and_check_clock(datetime.now().astimezone(), "clock_sync")
                 log("clock_test_passed", persistence_verified=False,
                     led_observation_required=True)
+            elif command == "date-test" and len(rest) <= 1:
+                raw = bytes(characteristic("2a2b")[0].ReadValue(
+                    dbus.Dictionary({}, signature="sv")))
+                before, _, _, _ = decode_clock(raw)
+                now = datetime.now().astimezone()
+                test_time = choose_date_test_time(now, before, rest[0] if rest else None)
+                log("date_test_begin", before=before.isoformat(),
+                    requested_time=test_time.isoformat(), raw=raw.hex())
+                # Always try to restore real local time, even after a failed ACK
+                # or readback: the device may already have accepted the date.
+                try:
+                    write_and_check_clock(test_time, "date_test")
+                    log("date_write_verified", date_changed=True,
+                        persistence_verified=False)
+                finally:
+                    log("clock_restore_begin")
+                    try:
+                        write_and_check_clock(datetime.now().astimezone(), "restore")
+                    except (dbus.DBusException, ValueError, OSError) as e:
+                        log("clock_restore_failed", message=str(e),
+                            action="Reconnect and run clock-test before measuring")
+                        raise
+                    log("clock_restore_verified")
+                log("date_test_passed", restored_to_laptop_time=True,
+                    persistence_verified=False, led_observation_required=True)
             elif command == "fetch":
                 for short in ("fff1", "fff2"):
                     c, _ = characteristic(short)
@@ -183,7 +208,7 @@ def main():
                     device.Disconnect()
                 loop.quit()
             else:
-                raise ValueError("Befehle: status, clock-test, read 2a19, read fff4, settings HEX, fetch, ack, control 00/01/02, connect, mark TEXT, quit")
+                raise ValueError("Befehle: status, clock-test, date-test [YYYY-MM-DD], read 2a19, read fff4, settings HEX, fetch, ack, control 00/01/02, connect, mark TEXT, quit")
         except (dbus.DBusException, ValueError, OSError) as e:
             log("error", message=str(e))
         return False
@@ -197,7 +222,7 @@ def main():
             snapshot()
             if props.Get(DEV, "ServicesResolved"):
                 log("ready", characteristics={u: flags for u, (_, flags) in chars.items()})
-                print("Befehle: status | clock-test | read 2a19 | read fff4 | fetch | ack | control 00/01/02 | settings 0003 | mark TEXT | quit", flush=True)
+                print("Befehle: status | clock-test | date-test [YYYY-MM-DD] | read 2a19 | read fff4 | fetch | ack | control 00/01/02 | settings 0003 | mark TEXT | quit", flush=True)
                 return False
         except dbus.DBusException as e:
             log("error", message=str(e))

@@ -2,7 +2,7 @@
 """Decode captured Ovy ATT TSV; no Bluetooth writes or dependencies."""
 import argparse
 import csv
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,6 +16,18 @@ def encode_clock(stamp):
     return stamp.year.to_bytes(2, "little") + bytes((
         stamp.month, stamp.day, stamp.hour, stamp.minute, stamp.second,
         stamp.isoweekday(), fraction, 1))
+
+
+def choose_date_test_time(now, device_time, requested_date=None):
+    """Use a deliberately different date, preserving current local time of day."""
+    target = date.fromisoformat(requested_date) if requested_date else now.date() + timedelta(days=1)
+    if requested_date is None and target == device_time.date():
+        target += timedelta(days=1)
+    if target == device_time.date():
+        raise ValueError("Test date must differ from the device date")
+    stamp = now.replace(year=target.year, month=target.month, day=target.day)
+    encode_clock(stamp)  # Validate before any write.
+    return stamp
 
 
 def decode_clock(raw):
