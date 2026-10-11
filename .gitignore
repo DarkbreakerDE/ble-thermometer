@@ -28,7 +28,6 @@
 /analyse/*
 !/analyse/decode_ovy.py
 !/analyse/live_ovy.py
-!/analyse/test_clock.py
 /.agents/
 /.codex/
 /.aws/

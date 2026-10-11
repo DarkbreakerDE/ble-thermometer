@@ -135,3 +135,21 @@ python3 analyse/decode_ovy.py
 
 Der Decoder setzt die in der Protokollbeschreibung beobachteten Handles
 voraus. Andere Geräte-/Firmwarevarianten können davon abweichen.
+
+## Clock hardware test (tests branch)
+
+The existing Linux tester supports `clock-test`. It builds the Rust
+`clock_commands` example, obtains the actual driver's Current Time and blink ACK
+commands, and executes them in order with GATT write responses. No clock layout
+is duplicated in Python. Rust and cached Cargo dependencies are required.
+
+After `ready` is printed, enter `clock-test` (do not enter `ready` itself).
+This explicitly sets the device clock to the laptop's local time. The tester reads
+Current Time before writing and twice afterward, two seconds apart, checking the
+weekday and a two-second tolerance. Observe the two LED flashes separately.
+A successful write followed by a failed read does not restore the old clock.
+Use `quit` to disconnect. To verify persistence, power-cycle the thermometer,
+reconnect and use `read 2a2b` before issuing another `clock-test`. Actual
+measurement timestamps after restart still require separate verification.
+
+Real clock readbacks and logs remain ignored; do not add them to Git.

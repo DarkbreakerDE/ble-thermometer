@@ -2,15 +2,16 @@
 """Interactive BlueZ tester. Run on the laptop host, not in a sandbox.
 
 Requires python3-dbus and python3-gi. Pair using bluetoothctl first.
-No automatic setting/time writes, completion acknowledgements or reconnects.
+No automatic writes or reconnects. Explicit clock-test writes local time and blink ACK.
 """
 import argparse
 import json
 import shlex
 import sys
+import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 try:
@@ -126,6 +127,61 @@ def main():
                 c.WriteValue(dbus.Array(bytes.fromhex(rest[0]), signature="y"),
                              dbus.Dictionary({"type": "request"}, signature="sv"))
                 log("write_ok", uuid="fff4", raw=rest[0])
+            elif command == "clock-test" and not rest:
+                # Compile first: timestamp capture must follow potentially slow builds.
+                root = Path(__file__).resolve().parents[1]
+                subprocess.run(["cargo", "build", "--offline", "-p", "thermometer_protocol",
+                                "--example", "clock_commands"], cwd=root, check=True)
+                metadata = json.loads(subprocess.check_output(
+                    ["cargo", "metadata", "--offline", "--format-version", "1", "--no-deps"],
+                    cwd=root, text=True))
+                binary = Path(metadata["target_directory"]) / "debug/examples/clock_commands"
+                now = datetime.now().astimezone()
+                clock = {"local_time": {k: getattr(now, k) for k in
+                         ("year", "month", "day", "hour", "minute", "second")},
+                         "microsecond": now.microsecond}
+                commands = json.loads(subprocess.check_output(
+                    [str(binary)], input=json.dumps(clock), text=True))
+                expected = [("2a2b", 10), ("fff3", 1)]
+                if len(commands) != len(expected):
+                    raise ValueError("Unerwartete Rust-Kommandos")
+                for item, (short, length) in zip(commands, expected):
+                    if (item["type"] != "write" or
+                        item["characteristic"]["characteristic_id"] !=
+                            f"0000{short}-0000-1000-8000-00805f9b34fb" or
+                        len(item["data"]) != length):
+                        raise ValueError("Unerwartetes Rust-Kommando")
+                c, flags = characteristic("2a2b")
+                if "read" not in flags or "write" not in flags:
+                    raise ValueError("Current Time bietet kein Read/Write an")
+                log("clock_before", raw=bytes(c.ReadValue(
+                    dbus.Dictionary({}, signature="sv"))).hex())
+                sent_at = time.monotonic()
+                for item, (short, _) in zip(commands, expected):
+                    characteristic(short)[0].WriteValue(
+                        dbus.Array(item["data"], signature="y"),
+                        dbus.Dictionary({"type": "request"}, signature="sv"))
+                    log("write_ok", uuid=short, raw=bytes(item["data"]).hex())
+                # Two independent reads distinguish a running clock from an echo.
+                for sample in range(2):
+                    if sample:
+                        time.sleep(2)
+                    raw = bytes(c.ReadValue(dbus.Dictionary({}, signature="sv")))
+                    if len(raw) != 10:
+                        raise ValueError("Current Time muss zehn Bytes enthalten")
+                    stamp = datetime(int.from_bytes(raw[:2], "little"), *raw[2:7])
+                    stamp += timedelta(seconds=raw[8] / 256)
+                    target = now.replace(tzinfo=None) + timedelta(
+                        seconds=time.monotonic() - sent_at)
+                    drift = (stamp - target).total_seconds()
+                    weekday_ok = raw[7] == stamp.isoweekday()
+                    log("clock_readback", sample=sample, raw=raw.hex(),
+                        device_time=stamp.isoformat(), drift_seconds=round(drift, 3),
+                        weekday_ok=weekday_ok, within_tolerance=abs(drift) <= 2)
+                    if abs(drift) > 2 or not weekday_ok:
+                        raise ValueError("Uhr-Readback weicht ab; siehe privates Log")
+                log("clock_test_passed", persistence_verified=False,
+                    led_observation_required=True)
             elif command == "fetch":
                 for short in ("fff1", "fff2"):
                     c, _ = characteristic(short)
@@ -150,8 +206,8 @@ def main():
                     device.Disconnect()
                 loop.quit()
             else:
-                raise ValueError("Befehle: status, read 2a19, read fff4, settings HEX, fetch, ack, control 00/01/02, connect, mark TEXT, quit")
-        except (dbus.DBusException, ValueError) as e:
+                raise ValueError("Befehle: status, clock-test, read 2a19, read fff4, settings HEX, fetch, ack, control 00/01/02, connect, mark TEXT, quit")
+        except (dbus.DBusException, ValueError, OSError, subprocess.SubprocessError) as e:
             log("error", message=str(e))
         return False
 
@@ -164,7 +220,7 @@ def main():
             snapshot()
             if props.Get(DEV, "ServicesResolved"):
                 log("ready", characteristics={u: flags for u, (_, flags) in chars.items()})
-                print("Befehle: status | read 2a19 | read fff4 | fetch | ack | control 00/01/02 | settings 0003 | mark TEXT | quit", flush=True)
+                print("Befehle: status | clock-test | read 2a19 | read fff4 | fetch | ack | control 00/01/02 | settings 0003 | mark TEXT | quit", flush=True)
                 return False
         except dbus.DBusException as e:
             log("error", message=str(e))
@@ -173,8 +229,13 @@ def main():
     log("start", address=args.address, log=str(args.log))
     if not props.Get(DEV, "Paired"):
         sys.exit("Bitte zuerst im Laptop-Terminal mit bluetoothctl pair koppeln.")
-    if not props.Get(DEV, "Connected"):
-        device.Connect(timeout=30)
+    try:
+        if not props.Get(DEV, "Connected"):
+            device.Connect(timeout=30)
+    except dbus.DBusException as e:
+        log("error", message=str(e))
+        log_file.close()
+        sys.exit("Verbindung fehlgeschlagen; Thermometer neu starten und Übertragungsmodus aktivieren.")
     threading.Thread(target=terminal, daemon=True).start()
     GLib.timeout_add_seconds(1, discovery)
     try:
