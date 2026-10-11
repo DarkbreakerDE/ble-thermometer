@@ -1,0 +1,27 @@
+# Private source captures and Android bugreport
+/bugreport1.zip
+/ovy-pairing.snoop
+/messwerte-*.md
+*.snoop
+*.btsnoop
+*.pcap
+*.pcapng
+*.jsonl
+
+# Local analysis contains pairing keys, device identifiers and real measurements.
+# Only the two source programs are intended for publication.
+/analyse/*
+!/analyse/decode_ovy.py
+!/analyse/live_ovy.py
+
+# Python build/environment files
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+
+# Local tool configuration and credentials
+/.agents/
+/.codex/
+/.aws/
