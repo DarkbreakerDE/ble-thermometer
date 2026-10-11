@@ -151,16 +151,19 @@ class ReactiveBleTransport implements BleTransport {
         .subscribeToCharacteristic(_qualified(characteristic))
         .listen(
           (data) {
-            if (generation == _generation)
+            if (generation == _generation) {
               _events.add(GattValue(characteristic, data));
+            }
           },
           onError: (Object error) {
-            if (generation == _generation)
+            if (generation == _generation) {
               _events.add(SubscriptionFailed('$error'));
+            }
           },
           onDone: () {
-            if (generation == _generation && _connected)
+            if (generation == _generation && _connected) {
               _events.add(SubscriptionFailed('GATT subscription ended'));
+            }
           },
         );
   }
@@ -171,8 +174,9 @@ class ReactiveBleTransport implements BleTransport {
     _connected = false;
     final connecting = _connecting;
     _connecting = null;
-    if (connecting != null && !connecting.isCompleted)
+    if (connecting != null && !connecting.isCompleted) {
       connecting.completeError(StateError('Connection cancelled'));
+    }
     final notifications = _notifications.values.toList();
     _notifications.clear();
     final connection = _connection;

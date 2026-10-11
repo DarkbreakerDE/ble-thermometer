@@ -1,11 +1,22 @@
-
-# Library build outputs and local SDK selection/cache
-/target/
+# Generated bridge sources and dependency lockfiles are intentionally committed.
+# Ignore compiled outputs, generated platform configuration and local caches.
 **/target/
 **/.dart_tool/
 **/build/
 **/.flutter-plugins*
-.fvm/
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/coverage/
+**/native_assets.yaml
+**/.gradle/
+**/android/local.properties
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/.fvm/
+
 # Private captures, device identifiers, health data and Android diagnostics
 /bugreport*.zip
 *.snoop

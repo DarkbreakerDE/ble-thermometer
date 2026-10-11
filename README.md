@@ -46,9 +46,9 @@ The app owns permission requests, discovery UI and OS pairing/passkey prompts.
 ## Validation and limits
 
 The Rust protocol and Dart session coordinator were checked on Linux using
-synthetic packets and the real native bridge. The Flutter BLE adapter has not yet
-been compiled because its dependency is unavailable in this environment's offline
-cache. Android/iOS build and device validation remain outstanding.
+synthetic packets and the real native bridge. The Flutter BLE adapter passes
+static analysis with its resolved dependencies. Android/iOS build and device
+validation remain outstanding.
 
 Unit and integration tests use synthetic packets and are included in this repository.
 Run `cargo test --workspace` from the repository root and `fvm dart test` from
