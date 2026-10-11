@@ -18,9 +18,21 @@ confirms the GATT write, not visual observation of the LED.
 
 Measurements carry current settings at transfer time, not historical settings.
 Repeated fetches use the observed FFF3=02 command. Unknown settings bits are not
-overwritten. Starting a measurement, deleting history, selecting a stored index,
-and clock synchronization are not implemented. The thermometer may need a physical
+overwritten. Starting a measurement, deleting history and selecting a stored index
+are not implemented. The thermometer may need a physical
 off/on cycle to leave transmission mode and start a new measurement.
+
+Clock synchronization uses the observed Current Time Service write to `1805/2A2B`:
+
+```dart
+await session.syncClock(); // current local time; requires stayConnected/ready
+// Or synchronize before the first batch, in either session mode:
+final batch = await session.start(synchronizeClockTo: DateTime.now());
+```
+
+The time write is followed by the blink ACK. Synchronization is opt-in; ordinary
+`start()` leaves the clock unchanged. Results confirm accepted writes, not verified
+clock accuracy or persistence. See [clock details](docs/integration.md#clock-synchronization).
 
 ## Setup
 

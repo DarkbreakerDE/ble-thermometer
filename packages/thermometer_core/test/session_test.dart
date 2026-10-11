@@ -3,13 +3,20 @@ import 'package:test/test.dart';
 import 'package:thermometer_core/thermometer_core.dart';
 
 GattCharacteristic c(String short) => GattCharacteristic(
-  '0000${short == '2a19' ? '180f' : 'fff0'}-0000-1000-8000-00805f9b34fb',
+  '0000${short == '2a19'
+      ? '180f'
+      : short == '2a2b'
+      ? '1805'
+      : 'fff0'}-0000-1000-8000-00805f9b34fb',
   '0000$short-0000-1000-8000-00805f9b34fb',
 );
 
 class FakeBle implements BleTransport {
   final controller = StreamController<TransportEvent>.broadcast(sync: true);
   final writes = <List<int>>[];
+  final writtenCharacteristics = <GattCharacteristic>[];
+  List<GattCharacteristic> discovery = [];
+  bool failClock = false, neverClock = false, disconnectClock = false;
   List<int> settings = [0, 3];
   bool connected = false, sendBatch = true, failAck = false, loseLink = false;
   bool neverConnect = false;
@@ -20,6 +27,7 @@ class FakeBle implements BleTransport {
   Future<void> connect(List<GattCharacteristic> discoveryProfile) async {
     if (neverConnect) await Completer<void>().future;
     connected = true;
+    discovery = discoveryProfile;
   }
 
   @override
@@ -50,6 +58,14 @@ class FakeBle implements BleTransport {
   @override
   Future<void> write(GattCharacteristic characteristic, List<int> data) async {
     writes.add(List.of(data));
+    writtenCharacteristics.add(characteristic);
+    if (characteristic == c('2a2b')) {
+      if (failClock) throw StateError('Clock write rejected');
+      if (neverClock) await Completer<void>().future;
+      if (disconnectClock) {
+        controller.add(TransportDisconnected('clock link lost'));
+      }
+    }
     if (characteristic == c('fff4')) settings = List.of(data);
     if (characteristic == c('fff3') && data[0] == 2) batch();
     if (characteristic == c('fff3') && data[0] == 1 && failAck) {
@@ -77,6 +93,142 @@ Future<ThermometerSession> session(
 );
 
 void main() {
+  test('clock sync uses local fields, exact CTS bytes and ACK', () async {
+    final ble = FakeBle();
+    final s = await session(ble, SessionMode.stayConnected);
+    await s.start();
+    expect(ble.discovery, contains(c('2a2b')));
+    final result = await s.syncClock(
+      time: DateTime(2024, 2, 29, 12, 34, 56, 500),
+    );
+    expect(ble.writtenCharacteristics, [c('2a2b'), c('fff3')]);
+    expect(ble.writes, [
+      [0xe8, 7, 2, 29, 12, 34, 56, 4, 128, 1],
+      [1],
+    ]);
+    expect(result.blinkCommandAccepted, isTrue);
+    expect(result.requestedTime.localTime.hour, 12);
+    expect(result.requestedTime.microsecond, 500000);
+    expect(s.state, 'ready');
+    await s.fetch();
+    await s.dispose();
+    await ble.controller.close();
+  });
+  test(
+    'startup clock sync preserves batch result in both session modes',
+    () async {
+      for (final mode in SessionMode.values) {
+        final ble = FakeBle();
+        final s = await session(ble, mode);
+        final clockEvent = s.clockSynchronizations.first;
+        final batch = await s.start(
+          synchronizeClockTo: DateTime(2024, 2, 29, 12, 34, 56),
+        );
+        expect(batch.reportedCount, 1);
+        expect((await clockEvent).requestedTime.localTime.year, 2024);
+        expect(ble.writes, [
+          [0xe8, 7, 2, 29, 12, 34, 56, 4, 0, 1],
+          [1],
+        ]);
+        expect(ble.connected, mode == SessionMode.stayConnected);
+        await s.dispose();
+        await ble.controller.close();
+      }
+    },
+  );
+  test('UTC input is converted to local calendar fields', () {
+    final utc = DateTime.utc(2024, 2, 29, 12, 34, 56, 999, 999);
+    final local = utc.toLocal();
+    final clock = DeviceClockTime.fromDateTime(utc);
+    expect(clock.localTime.hour, local.hour);
+    expect(clock.localTime.day, local.day);
+    expect(clock.microsecond, 999999);
+    expect(
+      () => DeviceClockTime.fromDateTime(DateTime(1500)),
+      throwsArgumentError,
+    );
+  });
+  test('rejected clock write disconnects and sends no ACK', () async {
+    final ble = FakeBle()..failClock = true;
+    final s = await session(ble, SessionMode.stayConnected);
+    await s.start();
+    await expectLater(
+      s.syncClock(),
+      throwsA(
+        isA<ThermometerException>().having((e) => e.kind, 'kind', 'transport'),
+      ),
+    );
+    await s.close();
+    expect(ble.writtenCharacteristics, [c('2a2b')]);
+    expect(ble.connected, isFalse);
+    await s.dispose();
+    await ble.controller.close();
+  });
+  test('clock ACK failure describes partial success', () async {
+    final ble = FakeBle()..failAck = true;
+    final s = await session(ble, SessionMode.stayConnected);
+    await s.start();
+    await expectLater(
+      s.syncClock(),
+      throwsA(
+        isA<ThermometerException>().having(
+          (e) => e.message,
+          'message',
+          contains('Clock write was accepted'),
+        ),
+      ),
+    );
+    await s.close();
+    expect(ble.connected, isFalse);
+    await s.dispose();
+    await ble.controller.close();
+  });
+  test('clock write timeout cleans up without ACK', () async {
+    final ble = FakeBle()..neverClock = true;
+    final s = await session(
+      ble,
+      SessionMode.stayConnected,
+      timeout: const Duration(milliseconds: 30),
+    );
+    await s.start();
+    await expectLater(
+      s.syncClock(),
+      throwsA(
+        isA<ThermometerException>().having((e) => e.kind, 'kind', 'timeout'),
+      ),
+    );
+    await s.close();
+    expect(ble.writtenCharacteristics, [c('2a2b')]);
+    expect(ble.connected, isFalse);
+    await s.dispose();
+    await ble.controller.close();
+  });
+  test(
+    'disconnect during clock write cancels operation and permits restart',
+    () async {
+      final ble = FakeBle()..disconnectClock = true;
+      final s = await session(ble, SessionMode.stayConnected);
+      await s.start();
+      await expectLater(
+        s.syncClock(),
+        throwsA(
+          isA<ThermometerException>().having(
+            (e) => e.kind,
+            'kind',
+            'disconnected',
+          ),
+        ),
+      );
+      await s.close();
+      expect(ble.writtenCharacteristics, [c('2a2b')]);
+      ble.disconnectClock = false;
+      await s.start();
+      await s.syncClock();
+      await s.dispose();
+      await ble.controller.close();
+    },
+  );
+
   test(
     'native bridge: transfer includes settings and disconnects before return',
     () async {

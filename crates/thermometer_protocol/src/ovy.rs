@@ -1,7 +1,11 @@
 use crate::{model::*, ThermometerDriver};
 
 pub fn characteristic(short: &str) -> Characteristic {
-    let service = if short == "2a19" { "180f" } else { "fff0" };
+    let service = match short {
+        "2a19" => "180f",
+        "2a2b" => "1805",
+        _ => "fff0",
+    };
     Characteristic {
         service_id: format!("0000{service}-0000-1000-8000-00805f9b34fb"),
         characteristic_id: format!("0000{short}-0000-1000-8000-00805f9b34fb"),
@@ -61,23 +65,7 @@ pub fn decode_measurement(
         minute: data[10],
         second: data[11],
     };
-    let leap = time.year.is_multiple_of(4)
-        && (!time.year.is_multiple_of(100) || time.year.is_multiple_of(400));
-    let days = match time.month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => 0,
-    };
-    if time.year == 0
-        || time.year > 9999
-        || time.day == 0
-        || time.day > days
-        || time.hour > 23
-        || time.minute > 59
-        || time.second > 59
-    {
+    if !valid_calendar(&time) {
         return Err("Invalid measurement calendar timestamp".into());
     }
     let unit = if data[0] & 1 == 0 {
@@ -100,9 +88,60 @@ pub fn decode_measurement(
     })
 }
 
+fn valid_calendar(time: &MeasurementTime) -> bool {
+    let leap = time.year.is_multiple_of(4)
+        && (!time.year.is_multiple_of(100) || time.year.is_multiple_of(400));
+    let days = match time.month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    };
+    time.year > 0
+        && time.year <= 9999
+        && time.day > 0
+        && time.day <= days
+        && time.hour <= 23
+        && time.minute <= 59
+        && time.second <= 59
+}
+
+/// Observed CTS write format: Exact Time 256 followed by manual Adjust Reason.
+pub fn encode_clock(time: &ClockTime) -> Result<Vec<u8>, String> {
+    let t = &time.local_time;
+    if !valid_calendar(t) || t.year < 1582 || time.microsecond >= 1_000_000 {
+        return Err("Invalid local clock time (year 1582..9999, microsecond 0..999999)".into());
+    }
+    // Gregorian weekday (Sakamoto), converted to CTS Monday=1, Sunday=7.
+    let offsets = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let year = u32::from(t.year) - u32::from(t.month < 3);
+    let weekday = (year + year / 4 - year / 100
+        + year / 400
+        + offsets[usize::from(t.month - 1)]
+        + u32::from(t.day))
+        % 7;
+    let fraction = (time.microsecond * 256 / 1_000_000) as u8;
+    let year_bytes = t.year.to_le_bytes();
+    Ok(vec![
+        year_bytes[0],
+        year_bytes[1],
+        t.month,
+        t.day,
+        t.hour,
+        t.minute,
+        t.second,
+        if weekday == 0 { 7 } else { weekday as u8 },
+        fraction,
+        0x01,
+    ])
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Connect,
+    SyncClock,
+    ClockBlink,
     TransferSettings,
     Battery,
     SubscribeMeasurements,
@@ -123,6 +162,8 @@ pub struct OvyOt35 {
     settings: Option<ThermometerSettings>,
     battery: Option<u8>,
     desired: Option<DesiredSettings>,
+    clock: Option<ClockTime>,
+    sync_then_transfer: bool,
     measurements: Vec<Measurement>,
     count: Option<u8>,
     subscribed: bool,
@@ -139,6 +180,8 @@ impl OvyOt35 {
             settings: None,
             battery: None,
             desired: None,
+            clock: None,
+            sync_then_transfer: false,
             measurements: vec![],
             count: None,
             subscribed: false,
@@ -187,6 +230,7 @@ impl OvyOt35 {
     fn fail(&mut self, kind: DriverErrorKind, message: impl Into<String>, out: &mut DriverOutput) {
         Self::error(out, kind, message);
         self.failure = true;
+        self.clock = None;
         self.measurements.clear();
         self.count = None;
         self.desired = None;
@@ -259,7 +303,9 @@ impl OvyOt35 {
                 self.state = SessionState::Failed;
                 self.subscribed = false;
             } else {
-                let message = if step == Step::Blink {
+                let message = if step == Step::ClockBlink {
+                    format!("Clock write was accepted, but blink acknowledgement failed: {message}")
+                } else if step == Step::Blink {
                     format!("Settings were applied and verified, but blink acknowledgement failed: {message}")
                 } else {
                     message
@@ -269,7 +315,28 @@ impl OvyOt35 {
             return;
         }
         match step {
-            Step::Connect => self.begin_transfer(out),
+            Step::Connect => {
+                if let Some(time) = &self.clock {
+                    let data = encode_clock(time).expect("clock was validated before connecting");
+                    self.state = SessionState::SynchronizingClock;
+                    self.write(Step::SyncClock, "2a2b", data, out);
+                } else {
+                    self.begin_transfer(out);
+                }
+            }
+            Step::SyncClock => self.write(Step::ClockBlink, "fff3", vec![1], out),
+            Step::ClockBlink => {
+                out.events.push(DriverEvent::ClockSynchronized {
+                    requested_time: self.clock.take().expect("clock sync has a target"),
+                    blink_confirmed: true,
+                });
+                if self.sync_then_transfer {
+                    self.sync_then_transfer = false;
+                    self.begin_transfer(out);
+                } else {
+                    self.state = SessionState::Ready;
+                }
+            }
             Step::TransferSettings => match decode_settings(&data) {
                 Ok(settings) => {
                     self.settings = Some(settings);
@@ -390,13 +457,17 @@ impl ThermometerDriver for OvyOt35 {
             waiting_for_transfer: false,
         };
         match input {
-            DriverInput::Start => {
+            DriverInput::Start { clock } => {
                 if !matches!(
                     self.state,
                     SessionState::Disconnected | SessionState::Failed
                 ) {
                     Self::error(&mut out, DriverErrorKind::Busy, "Session is already active");
+                } else if let Some(error) = clock.as_ref().and_then(|t| encode_clock(t).err()) {
+                    Self::error(&mut out, DriverErrorKind::InvalidArgument, error);
                 } else {
+                    self.clock = clock;
+                    self.sync_then_transfer = self.clock.is_some();
                     self.failure = false;
                     self.subscribed = false;
                     self.settings = None;
@@ -414,6 +485,7 @@ impl ThermometerDriver for OvyOt35 {
                                 characteristic("fff3"),
                                 characteristic("fff4"),
                                 characteristic("2a19"),
+                                characteristic("2a2b"),
                             ],
                         },
                         &mut out,
@@ -472,6 +544,27 @@ impl ThermometerDriver for OvyOt35 {
                     );
                 }
             }
+            DriverInput::SyncClock { time } => {
+                if self.state != SessionState::Ready || self.mode != SessionMode::StayConnected {
+                    Self::error(
+                        &mut out,
+                        DriverErrorKind::Busy,
+                        "Clock sync requires an idle stay-connected session",
+                    );
+                } else {
+                    match encode_clock(&time) {
+                        Ok(data) => {
+                            self.clock = Some(time);
+                            self.sync_then_transfer = false;
+                            self.state = SessionState::SynchronizingClock;
+                            self.write(Step::SyncClock, "2a2b", data, &mut out);
+                        }
+                        Err(error) => {
+                            Self::error(&mut out, DriverErrorKind::InvalidArgument, error)
+                        }
+                    }
+                }
+            }
             DriverInput::SetSettings { settings } => {
                 if self.state == SessionState::Ready && self.mode == SessionMode::StayConnected {
                     self.desired = Some(settings);
@@ -493,7 +586,12 @@ impl ThermometerDriver for OvyOt35 {
                         self.state = SessionState::Failed;
                         Self::error(&mut out, DriverErrorKind::Timeout, "Disconnect timed out");
                     } else {
-                        self.fail(DriverErrorKind::Timeout, "BLE command timed out", &mut out);
+                        let message = if self.pending.map(|p| p.1) == Some(Step::ClockBlink) {
+                            "Clock write was accepted, but blink acknowledgement timed out"
+                        } else {
+                            "BLE command timed out"
+                        };
+                        self.fail(DriverErrorKind::Timeout, message, &mut out);
                     }
                 }
             }
@@ -516,6 +614,11 @@ impl ThermometerDriver for OvyOt35 {
                     && self.state != SessionState::Disconnected
                     && self.state != SessionState::Failed
                 {
+                    let reason = if self.pending.map(|p| p.1) == Some(Step::ClockBlink) {
+                        format!("Clock write was accepted, but connection closed during blink acknowledgement: {reason}")
+                    } else {
+                        reason
+                    };
                     Self::error(&mut out, DriverErrorKind::Disconnected, reason);
                     self.failure = true;
                 }
@@ -524,6 +627,7 @@ impl ThermometerDriver for OvyOt35 {
                 self.measurements.clear();
                 self.count = None;
                 self.desired = None;
+                self.clock = None;
                 self.state = if self.failure {
                     SessionState::Failed
                 } else {
@@ -536,6 +640,7 @@ impl ThermometerDriver for OvyOt35 {
                 }
             }
             DriverInput::Close => {
+                self.clock = None;
                 self.measurements.clear();
                 self.count = None;
                 self.desired = None;

@@ -15,6 +15,7 @@ pub enum SessionState {
     Receiving,
     Ready,
     ChangingSettings,
+    SynchronizingClock,
     Disconnecting,
     Failed,
 }
@@ -84,6 +85,14 @@ pub struct MeasurementTime {
     pub second: u8,
 }
 
+/// Local civil time supplied by the caller; no timezone is encoded on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockTime {
+    pub local_time: MeasurementTime,
+    /// Microseconds within the second, not within the millisecond.
+    pub microsecond: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Measurement {
     pub temperature: f64,
@@ -110,6 +119,7 @@ pub enum DriverErrorKind {
     Busy,
     Unsupported,
     InvalidState,
+    InvalidArgument,
     Protocol,
     Transport,
     Timeout,
@@ -120,6 +130,11 @@ pub enum DriverErrorKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DriverEvent {
+    /// The time write and blink ACK succeeded; device clock readback is unverified.
+    ClockSynchronized {
+        requested_time: ClockTime,
+        blink_confirmed: bool,
+    },
     TransferCompleted {
         transfer: MeasurementTransfer,
     },
@@ -146,7 +161,9 @@ pub struct DriverOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DriverInput {
-    Start,
+    Start {
+        clock: Option<ClockTime>,
+    },
     CommandResult {
         command_id: u32,
         #[serde(default)]
@@ -167,6 +184,9 @@ pub enum DriverInput {
     Fetch,
     SetSettings {
         settings: DesiredSettings,
+    },
+    SyncClock {
+        time: ClockTime,
     },
     Close,
     /// Unsupported protocol operations are explicit, never guessed writes.

@@ -25,9 +25,11 @@ class ThermometerSession {
   final _transfers = StreamController<MeasurementTransfer>.broadcast();
   final _errors = StreamController<ThermometerException>.broadcast();
   final _states = StreamController<String>.broadcast();
+  final _clockSyncs = StreamController<ClockSyncResult>.broadcast();
   late final StreamSubscription<TransportEvent> _subscription;
   Future<void> _tail = Future.value();
   Completer<Object>? _operation;
+  String? _requestType;
   Completer<void>? _closing;
   MeasurementTransfer? _lastTransfer;
   Timer? _transferTimer;
@@ -39,9 +41,23 @@ class ThermometerSession {
   Stream<MeasurementTransfer> get transfers => _transfers.stream;
   Stream<ThermometerException> get errors => _errors.stream;
   Stream<String> get states => _states.stream;
+  Stream<ClockSyncResult> get clockSynchronizations => _clockSyncs.stream;
 
-  Future<MeasurementTransfer> start() =>
-      _request<MeasurementTransfer>({'type': 'start'});
+  /// Optionally writes this local time before fetching, in either session mode.
+  Future<MeasurementTransfer> start({DateTime? synchronizeClockTo}) =>
+      _request<MeasurementTransfer>({
+        'type': 'start',
+        'clock': synchronizeClockTo == null
+            ? null
+            : DeviceClockTime.fromDateTime(synchronizeClockTo).toJson(),
+      });
+
+  /// Synchronizes an idle stay-connected session; defaults to current local time.
+  Future<ClockSyncResult> syncClock({DateTime? time}) =>
+      _request<ClockSyncResult>({
+        'type': 'sync_clock',
+        'time': DeviceClockTime.fromDateTime(time ?? DateTime.now()).toJson(),
+      });
   Future<MeasurementTransfer> fetch() =>
       _request<MeasurementTransfer>({'type': 'fetch'});
   Future<SettingsChange> changeSettings(DesiredSettings settings) =>
@@ -57,6 +73,7 @@ class ThermometerSession {
     }
     final operation = Completer<Object>();
     _operation = operation;
+    _requestType = input['type'] as String;
     _lastTransfer = null;
     _enqueue(input);
     return await operation.future as T;
@@ -65,6 +82,7 @@ class ThermometerSession {
   void _complete(Object value) {
     final operation = _operation;
     _operation = null;
+    _requestType = null;
     if (operation != null && !operation.isCompleted) operation.complete(value);
   }
 
@@ -72,6 +90,7 @@ class ThermometerSession {
     _errors.add(error);
     final operation = _operation;
     _operation = null;
+    _requestType = null;
     if (operation != null && !operation.isCompleted) {
       operation.completeError(error);
     }
@@ -106,6 +125,11 @@ class ThermometerSession {
           for (final raw in output['events'] as List) {
             final event = raw as Map<String, dynamic>;
             switch (event['type']) {
+              case 'clock_synchronized':
+                final result = ClockSyncResult.fromJson(event);
+                _clockSyncs.add(result);
+                // During start, the awaited result remains the measurement batch.
+                if (_requestType == 'sync_clock') _complete(result);
               case 'transfer_completed':
                 final transfer = MeasurementTransfer.fromJson(
                   event['transfer'] as Map<String, dynamic>,
@@ -255,5 +279,6 @@ class ThermometerSession {
     await _transfers.close();
     await _errors.close();
     await _states.close();
+    await _clockSyncs.close();
   }
 }

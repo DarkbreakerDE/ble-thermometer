@@ -66,6 +66,36 @@ The thermometer was observed to require a physical off/on cycle to start a new
 measurement after transmission mode. Disconnecting BLE alone does not promise a
 return to measurement mode. Pairing/passkey entry remains an OS/user interaction.
 
+## Clock synchronization
+
+`session.syncClock()` writes the current local time in an idle stay-connected
+session. Pass `time: someDateTime` to supply a specific time. In either session
+mode, `start(synchronizeClockTo: someDateTime)` synchronizes immediately after
+connecting and before reading the stored measurement batch. Ordinary `start()`
+does not write the clock. Listen to `clockSynchronizations` for successful clock
+operations, including those performed during startup.
+
+Dart converts UTC inputs to the host's local timezone and passes calendar fields
+and microseconds within the second to Rust. Rust validates the calendar, computes
+the Gregorian weekday (Monday=1, Sunday=7), and encodes ten bytes: year LE16,
+month, day, hour, minute, second, weekday, Fractions256, AdjustReason. Fractions256
+is truncated from microseconds; AdjustReason is `01`, matching the observed app
+writes. The BLE transport writes with response to service `1805`, characteristic
+`2A2B`. After a successful time write, Rust sends `FFF3=01` for the blink ACK.
+
+`ClockSyncResult.requestedTime` is the requested local time, not a readback.
+`blinkCommandAccepted` confirms the ACK write. A failed ACK can occur after the
+clock write was already accepted; the exception reports this partial success.
+Write failures, timeouts and disconnects clean up the connection. No readback
+comparison, automatic resync or clock persistence guarantee is implemented.
+Device-side use of Fractions256/AdjustReason still needs hardware verification.
+The supplied time is captured at the call, so startup connection delay and
+Bluetooth transport latency are not compensated. No UTC offset is transmitted.
+
+The write and payload were observed in the original app's capture and align with
+the [Bluetooth Current Time Service](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/CTS_v1.0/out/en/index-en.html).
+Public tests use synthetic times rather than values copied from the private capture.
+
 ## Sources for platform APIs
 
 The adapter follows the [flutter_reactive_ble package documentation](https://pub.dev/packages/flutter_reactive_ble)

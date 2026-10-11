@@ -53,6 +53,60 @@ class MeasurementTime {
   final int year, month, day, hour, minute, second;
 }
 
+/// Local calendar time. The Bluetooth payload carries no UTC offset.
+class DeviceClockTime {
+  DeviceClockTime._(this.localTime, this.microsecond);
+
+  factory DeviceClockTime.fromDateTime(DateTime time) {
+    final local = time.toLocal();
+    if (local.year < 1582 || local.year > 9999) {
+      throw ArgumentError.value(time, 'time', 'Clock year must be 1582..9999');
+    }
+    return DeviceClockTime._(
+      MeasurementTime.fromJson({
+        'year': local.year,
+        'month': local.month,
+        'day': local.day,
+        'hour': local.hour,
+        'minute': local.minute,
+        'second': local.second,
+      }),
+      local.millisecond * 1000 + local.microsecond,
+    );
+  }
+
+  factory DeviceClockTime.fromJson(Map<String, dynamic> json) =>
+      DeviceClockTime._(
+        MeasurementTime.fromJson(json['local_time'] as Map<String, dynamic>),
+        json['microsecond'] as int,
+      );
+
+  final MeasurementTime localTime;
+  final int microsecond;
+  Map<String, Object> toJson() => {
+    'local_time': {
+      'year': localTime.year,
+      'month': localTime.month,
+      'day': localTime.day,
+      'hour': localTime.hour,
+      'minute': localTime.minute,
+      'second': localTime.second,
+    },
+    'microsecond': microsecond,
+  };
+}
+
+/// Confirms accepted writes, not clock accuracy or persistence on the device.
+class ClockSyncResult {
+  ClockSyncResult.fromJson(Map<String, dynamic> json)
+    : requestedTime = DeviceClockTime.fromJson(
+        json['requested_time'] as Map<String, dynamic>,
+      ),
+      blinkCommandAccepted = json['blink_confirmed'] as bool;
+  final DeviceClockTime requestedTime;
+  final bool blinkCommandAccepted;
+}
+
 class Measurement {
   Measurement.fromJson(Map<String, dynamic> json)
     : temperature = (json['temperature'] as num).toDouble(),

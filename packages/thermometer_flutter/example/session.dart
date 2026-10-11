@@ -14,6 +14,8 @@ Future<MeasurementTransfer> readOnce(
     mode: mode,
   );
   try {
+    // Optional explicit clock synchronization in this mode before the batch:
+    // return await session.start(synchronizeClockTo: DateTime.now());
     return await session.start();
   } finally {
     await session.dispose();
@@ -31,6 +33,7 @@ Future<void> configureAndRead(FlutterReactiveBle ble, String deviceId) async {
   );
   try {
     final initial = await session.start();
+    await session.syncClock(); // local time write followed by blink ACK
     await session.changeSettings(
       DesiredSettings(
         unit: initial.currentSettings.unit,

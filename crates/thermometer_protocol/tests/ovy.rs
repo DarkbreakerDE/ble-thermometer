@@ -21,7 +21,7 @@ fn value(driver: &mut OvyOt35, short: &str, data: &[u8]) -> DriverOutput {
 }
 fn receiving(mode: SessionMode) -> (OvyOt35, BleCommand) {
     let mut d = OvyOt35::new(mode);
-    let o = d.handle(DriverInput::Start);
+    let o = d.handle(DriverInput::Start { clock: None });
     let o = result(&mut d, &o.commands[0], &[]);
     let o = result(&mut d, &o.commands[0], &[0, 3]);
     let o = result(&mut d, &o.commands[0], &[80]);
@@ -265,7 +265,7 @@ fn empty_batch_and_overfull_batch() {
 #[test]
 fn disconnected_and_stale_completion_never_advance() {
     let mut d = OvyOt35::new(SessionMode::StayConnected);
-    let o = d.handle(DriverInput::Start);
+    let o = d.handle(DriverInput::Start { clock: None });
     let c = o.commands[0].clone();
     let o = d.handle(DriverInput::Disconnected {
         reason: "link lost".into(),
@@ -274,7 +274,7 @@ fn disconnected_and_stale_completion_never_advance() {
     let cleanup = o.commands[0].clone();
     assert!(result(&mut d, &c, &[]).commands.is_empty());
     assert_eq!(result(&mut d, &cleanup, &[]).state, SessionState::Failed);
-    let o = d.handle(DriverInput::Start);
+    let o = d.handle(DriverInput::Start { clock: None });
     let id = o.commands[0].id;
     let o = d.handle(DriverInput::CommandTimeout { command_id: id });
     assert_eq!(o.commands[0].operation, BleOperation::Disconnect);
@@ -298,4 +298,181 @@ fn unsupported_operations_do_not_guess_commands() {
         ));
     }
     assert!(create_driver("unknown", SessionMode::StayConnected).is_err());
+}
+
+fn clock() -> ClockTime {
+    ClockTime {
+        local_time: MeasurementTime {
+            year: 2024,
+            month: 2,
+            day: 29,
+            hour: 12,
+            minute: 34,
+            second: 56,
+        },
+        microsecond: 500_000,
+    }
+}
+#[test]
+fn clock_packet_gregorian_weekday_and_fraction() {
+    use thermometer_protocol::ovy::encode_clock;
+    assert_eq!(
+        encode_clock(&clock()).unwrap(),
+        vec![0xe8, 7, 2, 29, 12, 34, 56, 4, 128, 1]
+    );
+    let mut t = clock();
+    t.local_time.year = 2023;
+    assert!(encode_clock(&t).is_err()); // invalid leap day
+    t = clock();
+    t.local_time.month = 0;
+    assert!(encode_clock(&t).is_err());
+    t = clock();
+    t.microsecond = 1_000_000;
+    assert!(encode_clock(&t).is_err());
+    t = clock();
+    t.local_time.year = 1500;
+    assert!(encode_clock(&t).is_err());
+    t = clock();
+    t.local_time = MeasurementTime {
+        year: 2000,
+        month: 1,
+        day: 2,
+        hour: 0,
+        minute: 0,
+        second: 0,
+    };
+    t.microsecond = 999_999;
+    let bytes = encode_clock(&t).unwrap();
+    assert_eq!(bytes[7], 7);
+    assert_eq!(bytes[8], 255);
+    t.local_time.day = 3;
+    t.microsecond = 0;
+    let bytes = encode_clock(&t).unwrap();
+    assert_eq!(bytes[7], 1);
+    assert_eq!(bytes[8], 0);
+}
+#[test]
+fn clock_sync_uses_cts_and_ack_after_write_response() {
+    let mut d = ready();
+    let o = d.handle(DriverInput::SyncClock { time: clock() });
+    assert_eq!(o.state, SessionState::SynchronizingClock);
+    assert_eq!(
+        o.commands[0].operation,
+        BleOperation::Write {
+            characteristic: Characteristic {
+                service_id: "00001805-0000-1000-8000-00805f9b34fb".into(),
+                characteristic_id: "00002a2b-0000-1000-8000-00805f9b34fb".into()
+            },
+            data: vec![0xe8, 7, 2, 29, 12, 34, 56, 4, 128, 1]
+        }
+    );
+    assert!(o.events.is_empty());
+    let o = result(&mut d, &o.commands[0], &[]);
+    assert_eq!(
+        o.commands[0].operation,
+        BleOperation::Write {
+            characteristic: characteristic("fff3"),
+            data: vec![1]
+        }
+    );
+    let o = result(&mut d, &o.commands[0], &[]);
+    assert_eq!(o.state, SessionState::Ready);
+    assert!(
+        matches!(&o.events[0],DriverEvent::ClockSynchronized {requested_time,blink_confirmed:true} if *requested_time==clock())
+    );
+}
+#[test]
+fn startup_clock_sync_is_optional_and_supported_in_both_modes() {
+    for mode in [
+        SessionMode::StayConnected,
+        SessionMode::TransferAndDisconnect,
+    ] {
+        let mut d = OvyOt35::new(mode);
+        let o = d.handle(DriverInput::Start {
+            clock: Some(clock()),
+        });
+        assert!(
+            matches!(&o.commands[0].operation,BleOperation::Connect {characteristics} if characteristics.contains(&characteristic("2a2b")))
+        );
+        let o = result(&mut d, &o.commands[0], &[]);
+        assert!(
+            matches!(&o.commands[0].operation,BleOperation::Write {characteristic:c,..} if *c==characteristic("2a2b"))
+        );
+        let o = result(&mut d, &o.commands[0], &[]);
+        let o = result(&mut d, &o.commands[0], &[]);
+        assert_eq!(o.state, SessionState::Receiving);
+        assert_eq!(
+            o.commands[0].operation,
+            BleOperation::Read {
+                characteristic: characteristic("fff4")
+            }
+        );
+    }
+}
+#[test]
+fn invalid_clock_and_busy_clock_do_not_write() {
+    let mut t = clock();
+    t.local_time.day = 30;
+    let mut d = ready();
+    let o = d.handle(DriverInput::SyncClock { time: t.clone() });
+    assert_eq!(o.state, SessionState::Ready);
+    assert!(o.commands.is_empty());
+    assert!(matches!(
+        o.events[0],
+        DriverEvent::Error {
+            kind: DriverErrorKind::InvalidArgument,
+            ..
+        }
+    ));
+    let mut d = OvyOt35::new(SessionMode::StayConnected);
+    let o = d.handle(DriverInput::Start { clock: Some(t) });
+    assert!(o.commands.is_empty());
+    d.handle(DriverInput::Start { clock: None });
+    let o = d.handle(DriverInput::SyncClock { time: clock() });
+    assert!(o.commands.is_empty());
+    assert!(matches!(
+        o.events[0],
+        DriverEvent::Error {
+            kind: DriverErrorKind::Busy,
+            ..
+        }
+    ));
+}
+#[test]
+fn rejected_clock_write_never_sends_ack_and_cleans_up() {
+    let mut d = ready();
+    let o = d.handle(DriverInput::SyncClock { time: clock() });
+    let o = d.handle(DriverInput::CommandResult {
+        command_id: o.commands[0].id,
+        data: vec![],
+        error: Some("write rejected".into()),
+    });
+    assert_eq!(o.commands[0].operation, BleOperation::Disconnect);
+    assert!(!o
+        .events
+        .iter()
+        .any(|e| matches!(e, DriverEvent::ClockSynchronized { .. })));
+}
+
+#[test]
+fn clock_ack_timeout_and_disconnect_report_accepted_time_write() {
+    for disconnected in [false, true] {
+        let mut d = ready();
+        let o = d.handle(DriverInput::SyncClock { time: clock() });
+        let o = result(&mut d, &o.commands[0], &[]);
+        let input = if disconnected {
+            DriverInput::Disconnected {
+                reason: "lost link".into(),
+            }
+        } else {
+            DriverInput::CommandTimeout {
+                command_id: o.commands[0].id,
+            }
+        };
+        let o = d.handle(input);
+        assert_eq!(o.commands[0].operation, BleOperation::Disconnect);
+        assert!(
+            matches!(&o.events[0],DriverEvent::Error {message,..} if message.contains("Clock write was accepted"))
+        );
+    }
 }
